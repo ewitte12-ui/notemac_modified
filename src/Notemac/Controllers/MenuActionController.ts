@@ -1,0 +1,594 @@
+import { useNotemacStore } from "../Model/Store";
+import { detectLanguage, detectLineEnding } from '../../Shared/Helpers/FileHelpers';
+import { GetEditorAction } from '../../Shared/Helpers/EditorGlobals';
+import type { FileTab } from "../Commons/Types";
+import type { LineEnding } from "../Commons/Enums";
+
+/**
+ * Routes menu actions to the appropriate store mutations and side effects.
+ * This is the central action dispatcher for all menu-triggered commands.
+ */
+export function HandleMenuAction(
+    action: string,
+    activeTabId: string | null,
+    tabs: FileTab[],
+    zoomLevel: number,
+    value?: boolean | string | number,
+): void
+{
+    const store = useNotemacStore.getState();
+    const editorAction = GetEditorAction();
+
+    switch (action)
+    {
+        // File actions
+        case 'new':
+            store.addTab();
+            break;
+        case 'open':
+            HandleOpenFile();
+            break;
+        case 'open-folder':
+            HandleOpenFolder();
+            break;
+        case 'save':
+            HandleSaveFile(activeTabId, tabs, false);
+            break;
+        case 'save-as':
+            HandleSaveFile(activeTabId, tabs, true);
+            break;
+        case 'save-copy-as':
+            HandleSaveFile(activeTabId, tabs, true);
+            break;
+        case 'save-all':
+            HandleSaveAllFiles(tabs);
+            break;
+        case 'reload-from-disk':
+            HandleReloadFromDisk(activeTabId, tabs);
+            break;
+        case 'rename-file':
+            HandleRenameFile(activeTabId, tabs);
+            break;
+        case 'delete-file':
+            // Cannot delete from disk in web — only close the tab
+            if (null !== activeTabId)
+                store.closeTab(activeTabId);
+            break;
+        case 'close-tab':
+            if (null !== activeTabId)
+                store.closeTab(activeTabId);
+            break;
+        case 'close-all':
+            store.closeAllTabs();
+            break;
+        case 'close-others':
+            if (null !== activeTabId)
+                store.closeOtherTabs(activeTabId);
+            break;
+        case 'close-tabs-to-left':
+            if (null !== activeTabId)
+                store.closeTabsToLeft(activeTabId);
+            break;
+        case 'close-tabs-to-right':
+            if (null !== activeTabId)
+                store.closeTabsToRight(activeTabId);
+            break;
+        case 'close-unchanged':
+            store.closeUnchangedTabs();
+            break;
+        case 'close-all-but-pinned':
+            store.closeAllButPinned();
+            break;
+        case 'restore-last-closed':
+            store.restoreLastClosedTab();
+            break;
+        case 'pin-tab':
+            if (null !== activeTabId)
+                store.togglePinTab(activeTabId);
+            break;
+        case 'print':
+            window.print();
+            break;
+
+        // Search actions
+        case 'find':
+            store.setShowFindReplace(true, 'find');
+            break;
+        case 'replace':
+            store.setShowFindReplace(true, 'replace');
+            break;
+        case 'find-in-files':
+            store.setShowFindReplace(true, 'findInFiles');
+            break;
+        case 'mark':
+            store.setShowFindReplace(true, 'mark');
+            break;
+        case 'incremental-search':
+            store.setShowIncrementalSearch(true);
+            break;
+        case 'goto-line':
+            store.setShowGoToLine(true);
+            break;
+        case 'find-char-in-range':
+            store.setShowCharInRange(true);
+            break;
+
+        // View actions
+        case 'word-wrap':
+            store.updateSettings({ wordWrap: value as boolean | undefined });
+            break;
+        case 'show-whitespace':
+            store.updateSettings({ showWhitespace: value as boolean | undefined, renderWhitespace: value ? 'all' : 'none' });
+            break;
+        case 'show-eol':
+            store.updateSettings({ showEOL: value as boolean | undefined });
+            break;
+        case 'show-non-printable':
+            store.updateSettings({ showNonPrintable: value as boolean | undefined });
+            break;
+        case 'show-wrap-symbol':
+            store.updateSettings({ showWrapSymbol: value as boolean | undefined });
+            break;
+        case 'indent-guide':
+            store.updateSettings({ showIndentGuides: value as boolean | undefined });
+            break;
+        case 'show-line-numbers':
+            store.updateSettings({ showLineNumbers: value as boolean | undefined });
+            break;
+        case 'toggle-minimap':
+            store.updateSettings({ showMinimap: value as boolean | undefined });
+            break;
+        case 'zoom-in':
+            store.setZoomLevel(zoomLevel + 1);
+            break;
+        case 'zoom-out':
+            store.setZoomLevel(zoomLevel - 1);
+            break;
+        case 'zoom-reset':
+            store.setZoomLevel(0);
+            break;
+        case 'toggle-sidebar':
+            store.toggleSidebar();
+            break;
+        case 'show-doc-list':
+            store.setSidebarPanel('docList');
+            break;
+        case 'show-function-list':
+            store.setSidebarPanel('functions');
+            break;
+        case 'show-project-panel':
+            store.setSidebarPanel('project');
+            break;
+        case 'distraction-free':
+            store.updateSettings({ distractionFreeMode: value as boolean | undefined });
+            break;
+        case 'always-on-top':
+        {
+            store.updateSettings({ alwaysOnTop: value as boolean | undefined });
+            if (window.electronAPI)
+                window.electronAPI.setAlwaysOnTop?.(value as boolean);
+            break;
+        }
+        case 'sync-scroll-v':
+            store.updateSettings({ syncScrollVertical: value as boolean | undefined });
+            break;
+        case 'sync-scroll-h':
+            store.updateSettings({ syncScrollHorizontal: value as boolean | undefined });
+            break;
+        case 'split-right':
+            if (null !== activeTabId)
+                store.setSplitView('vertical', activeTabId);
+            break;
+        case 'split-down':
+            if (null !== activeTabId)
+                store.setSplitView('horizontal', activeTabId);
+            break;
+        case 'close-split':
+            store.setSplitView('none');
+            break;
+        case 'show-summary':
+            store.setShowSummary(true);
+            break;
+        case 'toggle-monitoring':
+        {
+            if (null !== activeTabId)
+            {
+                const tab = tabs.find(t => t.id === activeTabId);
+                if (tab)
+                    store.updateTab(activeTabId, { isMonitoring: !tab.isMonitoring });
+            }
+            break;
+        }
+
+        // Language / Encoding
+        case 'language':
+            if (null !== activeTabId)
+                store.updateTab(activeTabId, { language: value as string | undefined });
+            break;
+        case 'encoding':
+            if (null !== activeTabId)
+                store.updateTab(activeTabId, { encoding: value as string | undefined });
+            break;
+        case 'line-ending':
+            if (null !== activeTabId)
+                store.updateTab(activeTabId, { lineEnding: value as LineEnding | undefined });
+            break;
+
+        // Macro
+        case 'macro-start':
+            store.startRecordingMacro();
+            break;
+        case 'macro-stop':
+            store.stopRecordingMacro();
+            break;
+
+        // New feature dialogs
+        case 'command-palette':
+            store.setShowCommandPalette(true);
+            break;
+        case 'quick-open':
+            store.setShowQuickOpen(true);
+            break;
+        case 'compare-files':
+            store.setShowDiffViewer(true);
+            break;
+        case 'snippet-manager':
+            store.setShowSnippetManager(true);
+            break;
+        case 'toggle-terminal':
+            store.setShowTerminalPanel(!store.showTerminalPanel);
+            break;
+
+        // Git actions
+        case 'clone-repository':
+            store.setShowCloneDialog(true);
+            break;
+        case 'git-settings':
+            store.setShowGitSettings(true);
+            break;
+        case 'show-git-panel':
+            store.setSidebarPanel('git');
+            break;
+
+        // AI actions
+        case 'ai-chat':
+            store.setSidebarPanel('ai');
+            break;
+        case 'ai-settings':
+            store.SetShowAiSettings(true);
+            break;
+        case 'ai-explain':
+        case 'ai-refactor':
+        case 'ai-generate-tests':
+        case 'ai-generate-docs':
+        case 'ai-fix-error':
+        case 'ai-simplify':
+        case 'ai-convert-language':
+            // These are dispatched via the editor's context menu;
+            // the actual call is handled in EditorPanelViewPresenter
+            if (editorAction)
+                editorAction(action);
+            break;
+        case 'ai-toggle-inline':
+            store.SetInlineSuggestionEnabled(!store.inlineSuggestionEnabled);
+            break;
+
+        // Plugin actions
+        case 'show-plugin-manager':
+            store.SetShowPluginManager(true);
+            break;
+        case 'reload-plugins':
+        {
+            import('./PluginController')
+                .then(({ InitializePluginSystem }) => InitializePluginSystem())
+                .catch((error: unknown) =>
+                {
+                    console.error('[PluginController] Failed to reload plugins:', error);
+                });
+            break;
+        }
+
+        // Dialogs
+        case 'preferences':
+            store.setShowSettings(true);
+            break;
+        case 'about':
+            store.setShowAbout(true);
+            break;
+        case 'run-command':
+            store.setShowRunCommand(true);
+            break;
+        case 'column-editor':
+            store.setShowColumnEditor(true);
+            break;
+        case 'shortcut-mapper':
+            store.setShowShortcutMapper(true);
+            break;
+        case 'clipboard-history':
+            store.setSidebarPanel('clipboardHistory');
+            break;
+        case 'char-panel':
+            store.setSidebarPanel('charPanel');
+            break;
+
+        // Run menu
+        case 'search-google':
+        {
+            const sel = window.getSelection()?.toString();
+            if (sel)
+                window.open(`https://www.google.com/search?q=${encodeURIComponent(sel)}`, '_blank');
+            break;
+        }
+        case 'search-wikipedia':
+        {
+            const sel = window.getSelection()?.toString();
+            if (sel)
+                window.open(`https://en.wikipedia.org/wiki/${encodeURIComponent(sel)}`, '_blank');
+            break;
+        }
+        case 'open-in-browser':
+        {
+            const tab = tabs.find(t => t.id === activeTabId);
+            if (tab && tab.path)
+                window.open(`file://${tab.path}`, '_blank');
+            break;
+        }
+
+        // Session management
+        case 'save-session':
+        {
+            const session = store.saveSession();
+            const blob = new Blob([JSON.stringify(session, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'session.json';
+            a.click();
+            URL.revokeObjectURL(url);
+            break;
+        }
+        case 'load-session':
+        {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = async (e) =>
+            {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (file)
+                {
+                    try
+                    {
+                        const text = await file.text();
+                        useNotemacStore.getState().loadSession(JSON.parse(text));
+                    }
+                    catch { /* Invalid session file — silently ignore */ }
+                }
+            };
+            input.click();
+            break;
+        }
+
+        // All editor-handled actions (pass through)
+        default:
+            // Check if it's a plugin command
+            if (action.startsWith('plugin:'))
+            {
+                import('./PluginController')
+                    .then(({ ExecutePluginCommand }) => ExecutePluginCommand(action))
+                    .catch((error: unknown) =>
+                    {
+                        console.error('[PluginController] Failed to execute plugin command:', error);
+                    });
+            }
+            else if (editorAction)
+            {
+                editorAction(action, value);
+            }
+            break;
+    }
+}
+
+// ─── File Operation Helpers ───────────────────────────────────────
+
+function HandleOpenFile(): void
+{
+    if (window.electronAPI)
+    {
+        window.electronAPI.openFile?.();
+        return;
+    }
+
+    // Web: use file input dialog
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.onchange = async () =>
+    {
+        if (!input.files)
+            return;
+
+        try
+        {
+            const store = useNotemacStore.getState();
+            for (const file of Array.from(input.files))
+            {
+                const content = await file.text();
+                store.addTab({
+                    name: file.name,
+                    content,
+                    language: detectLanguage(file.name),
+                    lineEnding: detectLineEnding(content),
+                });
+            }
+        }
+        catch { /* File read failed — user can retry from menu */ }
+    };
+    input.click();
+}
+
+function HandleOpenFolder(): void
+{
+    if (window.electronAPI)
+    {
+        window.electronAPI.openFolder?.();
+        return;
+    }
+
+    // Web: use directory picker if available
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.webkitdirectory = true;
+    input.onchange = async () =>
+    {
+        if (!input.files || 0 === input.files.length)
+            return;
+
+        try
+        {
+            const store = useNotemacStore.getState();
+            for (const file of Array.from(input.files))
+            {
+                const content = await file.text();
+                store.addTab({
+                    name: file.name,
+                    content,
+                    language: detectLanguage(file.name),
+                    lineEnding: detectLineEnding(content),
+                });
+            }
+        }
+        catch { /* File read failed — user can retry from menu */ }
+    };
+    input.click();
+}
+
+function HandleSaveFile(activeTabId: string | null, tabs: FileTab[], saveAs: boolean): void
+{
+    if (null === activeTabId)
+        return;
+
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (!tab)
+        return;
+
+    if (window.electronAPI)
+    {
+        if (saveAs || !tab.path)
+            window.electronAPI.saveFileAs?.(tab.content, tab.name);
+        else
+            window.electronAPI.saveFile?.(tab.content, tab.path);
+
+        // Mark as saved
+        useNotemacStore.getState().updateTab(activeTabId, { isModified: false });
+        return;
+    }
+
+    // Web: download as blob
+    const blob = new Blob([tab.content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = tab.name;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    useNotemacStore.getState().updateTab(activeTabId, { isModified: false });
+}
+
+function HandleSaveAllFiles(tabs: FileTab[]): void
+{
+    const store = useNotemacStore.getState();
+
+    for (const tab of tabs)
+    {
+        if (!tab.isModified)
+            continue;
+
+        if (window.electronAPI && tab.path)
+        {
+            window.electronAPI.saveFile?.(tab.content, tab.path);
+            store.updateTab(tab.id, { isModified: false });
+        }
+        else
+        {
+            // Web: download each modified file
+            const blob = new Blob([tab.content], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = tab.name;
+            a.click();
+            URL.revokeObjectURL(url);
+            store.updateTab(tab.id, { isModified: false });
+        }
+    }
+}
+
+function HandleReloadFromDisk(activeTabId: string | null, tabs: FileTab[]): void
+{
+    if (null === activeTabId)
+        return;
+
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (!tab)
+        return;
+
+    if (window.electronAPI && tab.path)
+    {
+        window.electronAPI.readFile?.(tab.path).then((content: string) =>
+        {
+            useNotemacStore.getState().updateTabContent(activeTabId, content);
+            useNotemacStore.getState().updateTab(activeTabId, { isModified: false });
+        }).catch((err: unknown) => {
+            const errorMessage = err instanceof Error ? err.message : String(err);
+            window.alert(`Failed to reload file from disk: ${errorMessage}`);
+        });
+        return;
+    }
+
+    // Web: re-open file picker for reload
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = async () =>
+    {
+        try
+        {
+            const file = input.files?.[0];
+            if (file)
+            {
+                const content = await file.text();
+                useNotemacStore.getState().updateTabContent(activeTabId, content);
+                useNotemacStore.getState().updateTab(activeTabId, { isModified: false, name: file.name });
+            }
+        }
+        catch { /* File read failed — user can retry */ }
+    };
+    input.click();
+}
+
+function HandleRenameFile(activeTabId: string | null, tabs: FileTab[]): void
+{
+    if (null === activeTabId)
+        return;
+
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (!tab)
+        return;
+
+    const newName = prompt('Enter new file name:', tab.name);
+    if (newName && newName !== tab.name)
+    {
+        // Reject names containing path separators or traversal sequences
+        if (/[/\\]/.test(newName) || newName.includes('..'))
+        {
+            alert('File name cannot contain path separators or "..".');
+            return;
+        }
+
+        useNotemacStore.getState().updateTab(activeTabId, { name: newName });
+
+        if (window.electronAPI && tab.path)
+            window.electronAPI.renameFile?.(tab.path, newName);
+    }
+}

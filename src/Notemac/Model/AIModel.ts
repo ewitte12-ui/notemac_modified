@@ -1,0 +1,455 @@
+import { StateCreator } from 'zustand';
+import { produce } from 'immer';
+import type { AIProvider, AICredential, AIConversation, AIMessage, AIInlineSuggestion, AIContextItem } from "../Commons/Types";
+import type { AISettings } from "../Configs/AIConfig";
+import { GetDefaultAISettings, GetBuiltInProviders } from "../Configs/AIConfig";
+import { GetValue, SetValue, RemoveValue } from '../../Shared/Persistence/PersistenceService';
+import { StoreSecureValue, RetrieveSecureValue, RemoveSecureValue } from '../../Shared/Persistence/CredentialStorageService';
+import { FetchModelsForProvider } from '../Controllers/LLMController';
+import { DB_AI_PROVIDERS, DB_AI_CREDENTIALS, DB_AI_SETTINGS, DB_AI_CONVERSATIONS, AI_MAX_CONVERSATIONS, CRED_DEFAULT_AI_EXPIRY_HOURS } from '../Commons/Constants';
+
+export interface NotemacAISlice
+{
+    // State
+    aiEnabled: boolean;
+    activeProviderId: string;
+    activeModelId: string;
+    providers: AIProvider[];
+    credentials: AICredential[];
+    aiSettings: AISettings;
+
+    // Chat
+    conversations: AIConversation[];
+    activeConversationId: string | null;
+    isAiStreaming: boolean;
+    aiStreamContent: string;
+
+    // Inline completion
+    inlineSuggestionEnabled: boolean;
+    currentInlineSuggestion: AIInlineSuggestion | null;
+
+    // Context
+    aiContextItems: AIContextItem[];
+
+    // Git commit message
+    commitMessageDraft: string;
+
+    // UI
+    showAiSettings: boolean;
+
+    // Operation
+    aiOperationError: string | null;
+
+    // Setters
+    SetAiEnabled: (enabled: boolean) => void;
+    SetActiveProvider: (providerId: string) => void;
+    SetActiveModel: (modelId: string) => void;
+    SetProviders: (providers: AIProvider[]) => void;
+    AddProvider: (provider: AIProvider) => void;
+    RemoveProvider: (providerId: string) => void;
+    SetCredentials: (credentials: AICredential[]) => void;
+    SetCredentialForProvider: (providerId: string, apiKey: string, rememberKey: boolean) => void;
+    RemoveCredentialForProvider: (providerId: string) => void;
+    UpdateAISettings: (settings: Partial<AISettings>) => void;
+
+    // Chat setters
+    SetConversations: (conversations: AIConversation[]) => void;
+    AddConversation: (conversation: AIConversation) => void;
+    RemoveConversation: (conversationId: string) => void;
+    SetActiveConversation: (conversationId: string | null) => void;
+    AddMessageToConversation: (conversationId: string, message: AIMessage) => void;
+    UpdateLastMessage: (conversationId: string, content: string) => void;
+    SetIsAiStreaming: (streaming: boolean) => void;
+    SetAiStreamContent: (content: string) => void;
+
+    // Inline
+    SetInlineSuggestionEnabled: (enabled: boolean) => void;
+    SetCurrentInlineSuggestion: (suggestion: AIInlineSuggestion | null) => void;
+
+    // Context
+    AddAiContextItem: (item: AIContextItem) => void;
+    RemoveAiContextItem: (index: number) => void;
+    ClearAiContext: () => void;
+
+    // Git
+    SetCommitMessageDraft: (draft: string) => void;
+
+    // UI
+    SetShowAiSettings: (show: boolean) => void;
+
+    // Error
+    SetAiOperationError: (error: string | null) => void;
+
+    // Model refresh
+    isRefreshingModels: boolean;
+    RefreshProviderModels: (providerId: string) => Promise<boolean>;
+
+    // Persistence
+    LoadAIState: () => void;
+    SaveAIState: () => void;
+
+    // Convenience
+    GetActiveProvider: () => AIProvider | null;
+    GetActiveModel: () => { id: string; name: string; providerId: string; contextWindow: number; supportsStreaming: boolean; supportsFIM: boolean } | null;
+    GetCredentialForProvider: (providerId: string) => AICredential | null;
+    GetActiveConversation: () => AIConversation | null;
+}
+
+export const createAISlice: StateCreator<NotemacAISlice> = (set, get) => ({
+    aiEnabled: false,
+    activeProviderId: 'openai',
+    activeModelId: 'gpt-4o-mini',
+    providers: GetBuiltInProviders(),
+    credentials: [],
+    aiSettings: GetDefaultAISettings(),
+
+    conversations: [],
+    activeConversationId: null,
+    isAiStreaming: false,
+    aiStreamContent: '',
+
+    inlineSuggestionEnabled: true,
+    currentInlineSuggestion: null,
+
+    aiContextItems: [],
+
+    commitMessageDraft: '',
+
+    showAiSettings: false,
+
+    aiOperationError: null,
+
+    isRefreshingModels: false,
+
+    // Setters
+    SetAiEnabled: (enabled) => set({ aiEnabled: enabled }),
+    SetActiveProvider: (providerId) => set({ activeProviderId: providerId }),
+    SetActiveModel: (modelId) => set({ activeModelId: modelId }),
+    SetProviders: (providers) => set({ providers }),
+
+    AddProvider: (provider) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const existingIdx = state.providers.findIndex(p => p.id === provider.id);
+            if (-1 !== existingIdx)
+                state.providers[existingIdx] = provider;
+            else
+                state.providers.push(provider);
+        }));
+        get().SaveAIState();
+    },
+
+    RemoveProvider: (providerId) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const idx = state.providers.findIndex(p => p.id === providerId);
+            if (-1 !== idx && !state.providers[idx].isBuiltIn)
+                state.providers.splice(idx, 1);
+        }));
+        get().SaveAIState();
+    },
+
+    SetCredentials: (credentials) => set({ credentials }),
+
+    SetCredentialForProvider: (providerId, apiKey, rememberKey) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const existingIdx = state.credentials.findIndex(c => c.providerId === providerId);
+            const cred: AICredential = { providerId, apiKey, rememberKey };
+            if (-1 !== existingIdx)
+                state.credentials[existingIdx] = cred;
+            else
+                state.credentials.push(cred);
+        }));
+
+        // Persist only remembered keys — encrypted with expiry
+        const creds = get().credentials;
+        const rememberedCreds = creds
+            .filter(c => c.rememberKey)
+            .map(c => ({ providerId: c.providerId, apiKey: c.apiKey, rememberKey: true }));
+
+        if (0 < rememberedCreds.length)
+        {
+            StoreSecureValue(
+                DB_AI_CREDENTIALS,
+                JSON.stringify(rememberedCreds),
+                CRED_DEFAULT_AI_EXPIRY_HOURS * 3600
+            );
+        }
+        else
+        {
+            RemoveSecureValue(DB_AI_CREDENTIALS);
+        }
+
+        // Also store session-only (non-remembered) in memory via CredentialStorageService
+        const sessionCreds = creds.filter(c => !c.rememberKey);
+        if (0 < sessionCreds.length)
+            StoreSecureValue(DB_AI_CREDENTIALS + '_session', JSON.stringify(sessionCreds), 0);
+    },
+
+    RemoveCredentialForProvider: (providerId) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const idx = state.credentials.findIndex(c => c.providerId === providerId);
+            if (-1 !== idx)
+                state.credentials.splice(idx, 1);
+        }));
+
+        const creds = get().credentials;
+        const rememberedCreds = creds.filter(c => c.rememberKey);
+        if (0 < rememberedCreds.length)
+            StoreSecureValue(DB_AI_CREDENTIALS, JSON.stringify(rememberedCreds), CRED_DEFAULT_AI_EXPIRY_HOURS * 3600);
+        else
+            RemoveSecureValue(DB_AI_CREDENTIALS);
+    },
+
+    UpdateAISettings: (newSettings) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            Object.assign(state.aiSettings, newSettings);
+        }));
+        SetValue(DB_AI_SETTINGS, get().aiSettings);
+    },
+
+    // Chat
+    SetConversations: (conversations) => set({ conversations }),
+
+    AddConversation: (conversation) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            state.conversations.unshift(conversation);
+            // Cap at max conversations
+            if (AI_MAX_CONVERSATIONS < state.conversations.length)
+                state.conversations.length = AI_MAX_CONVERSATIONS;
+        }));
+        set({ activeConversationId: conversation.id });
+    },
+
+    RemoveConversation: (conversationId) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const idx = state.conversations.findIndex(c => c.id === conversationId);
+            if (-1 !== idx)
+                state.conversations.splice(idx, 1);
+            if (conversationId === state.activeConversationId)
+                state.activeConversationId = 0 < state.conversations.length ? state.conversations[0].id : null;
+        }));
+    },
+
+    SetActiveConversation: (conversationId) => set({ activeConversationId: conversationId }),
+
+    AddMessageToConversation: (conversationId, message) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const conv = state.conversations.find(c => c.id === conversationId);
+            if (conv)
+                conv.messages.push(message);
+        }));
+    },
+
+    UpdateLastMessage: (conversationId, content) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            const conv = state.conversations.find(c => c.id === conversationId);
+            if (conv && 0 < conv.messages.length)
+            {
+                const lastMsg = conv.messages[conv.messages.length - 1];
+                lastMsg.content = content;
+            }
+        }));
+    },
+
+    SetIsAiStreaming: (streaming) => set({ isAiStreaming: streaming }),
+    SetAiStreamContent: (content) => set({ aiStreamContent: content }),
+
+    // Inline
+    SetInlineSuggestionEnabled: (enabled) => set({ inlineSuggestionEnabled: enabled }),
+    SetCurrentInlineSuggestion: (suggestion) => set({ currentInlineSuggestion: suggestion }),
+
+    // Context
+    AddAiContextItem: (item) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            state.aiContextItems.push(item);
+        }));
+    },
+
+    RemoveAiContextItem: (index) =>
+    {
+        set(produce((state: NotemacAISlice) =>
+        {
+            if (0 <= index && index < state.aiContextItems.length)
+                state.aiContextItems.splice(index, 1);
+        }));
+    },
+
+    ClearAiContext: () => set({ aiContextItems: [] }),
+
+    // Git
+    SetCommitMessageDraft: (draft) => set({ commitMessageDraft: draft }),
+
+    // UI
+    SetShowAiSettings: (show) => set({ showAiSettings: show }),
+
+    // Error
+    SetAiOperationError: (error) => set({ aiOperationError: error }),
+
+    // Model refresh — fetches live model list from provider API
+    RefreshProviderModels: async (providerId: string) =>
+    {
+        const state = get();
+        const provider = state.providers.find(p => p.id === providerId);
+        if (!provider) return false;
+
+        const credential = state.credentials.find(c => c.providerId === providerId);
+        if (!credential) return false;
+
+        set({ isRefreshingModels: true });
+
+        try
+        {
+            const models = await FetchModelsForProvider(provider, credential.apiKey);
+            if (null === models || 0 === models.length)
+            {
+                set({ isRefreshingModels: false });
+                return false;
+            }
+
+            set(produce((draft: NotemacAISlice) =>
+            {
+                const idx = draft.providers.findIndex(p => p.id === providerId);
+                if (-1 !== idx)
+                    draft.providers[idx].models = models;
+                draft.isRefreshingModels = false;
+            }));
+
+            return true;
+        }
+        catch
+        {
+            set({ isRefreshingModels: false });
+            return false;
+        }
+    },
+
+    // Persistence
+    LoadAIState: () =>
+    {
+        const savedSettings = GetValue<AISettings>(DB_AI_SETTINGS);
+        const savedProviders = GetValue<AIProvider[]>(DB_AI_PROVIDERS);
+        const savedConversations = GetValue<AIConversation[]>(DB_AI_CONVERSATIONS);
+
+        const builtIn = GetBuiltInProviders();
+        let providers = builtIn;
+
+        // Merge saved custom providers with built-in
+        if (null !== savedProviders && undefined !== savedProviders)
+        {
+            const customProviders = savedProviders.filter(p => !p.isBuiltIn);
+            providers = [...builtIn, ...customProviders];
+        }
+
+        // Set non-credential state synchronously
+        set({
+            aiSettings: savedSettings || GetDefaultAISettings(),
+            credentials: [],
+            providers,
+            conversations: savedConversations || [],
+            aiEnabled: false,
+        });
+
+        // Load credentials from secure storage (async) — overwrites credentials/aiEnabled when resolved
+        RetrieveSecureValue(DB_AI_CREDENTIALS).then((credStr) =>
+        {
+            let credentials: AICredential[] = [];
+
+            if (null !== credStr)
+            {
+                try { credentials = JSON.parse(credStr); }
+                catch { credentials = []; }
+            }
+            else
+            {
+                // Migration: check for old unencrypted credentials
+                const legacyCreds = GetValue<AICredential[]>(DB_AI_CREDENTIALS);
+                if (null !== legacyCreds && 0 < legacyCreds.length)
+                {
+                    credentials = legacyCreds;
+                    // Re-encrypt and remove old plaintext
+                    const remembered = legacyCreds.filter(c => c.rememberKey);
+                    if (0 < remembered.length)
+                        StoreSecureValue(DB_AI_CREDENTIALS, JSON.stringify(remembered), CRED_DEFAULT_AI_EXPIRY_HOURS * 3600);
+                    RemoveValue(DB_AI_CREDENTIALS);
+                }
+            }
+
+            set({
+                credentials,
+                aiEnabled: 0 < credentials.length,
+            });
+        }).catch(() =>
+        {
+            /* Credential retrieval failed — credentials remain as [] from sync set above */
+        });
+    },
+
+    SaveAIState: () =>
+    {
+        const state = get();
+        SetValue(DB_AI_SETTINGS, state.aiSettings);
+
+        // Only persist custom providers
+        const customProviders = state.providers.filter(p => !p.isBuiltIn);
+        if (0 < customProviders.length)
+            SetValue(DB_AI_PROVIDERS, customProviders);
+
+        // Only persist remembered credentials — encrypted
+        const rememberedCreds = state.credentials.filter(c => c.rememberKey);
+        if (0 < rememberedCreds.length)
+            StoreSecureValue(DB_AI_CREDENTIALS, JSON.stringify(rememberedCreds), CRED_DEFAULT_AI_EXPIRY_HOURS * 3600);
+        else
+            RemoveSecureValue(DB_AI_CREDENTIALS);
+
+        // Persist conversations
+        SetValue(DB_AI_CONVERSATIONS, state.conversations);
+    },
+
+    // Convenience
+    GetActiveProvider: () =>
+    {
+        const state = get();
+        return state.providers.find(p => p.id === state.activeProviderId) || null;
+    },
+
+    GetActiveModel: () =>
+    {
+        const state = get();
+        const provider = state.providers.find(p => p.id === state.activeProviderId);
+        if (null === provider || undefined === provider)
+            return null;
+        return provider.models.find(m => m.id === state.activeModelId) || null;
+    },
+
+    GetCredentialForProvider: (providerId) =>
+    {
+        return get().credentials.find(c => c.providerId === providerId) || null;
+    },
+
+    GetActiveConversation: () =>
+    {
+        const state = get();
+        if (null === state.activeConversationId)
+            return null;
+        return state.conversations.find(c => c.id === state.activeConversationId) || null;
+    },
+});

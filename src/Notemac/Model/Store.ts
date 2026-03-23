@@ -1,0 +1,29 @@
+import { create, StateCreator } from 'zustand';
+import { createTabSlice, NotemacTabSlice } from "./TabModel";
+import { createSearchSlice, NotemacSearchSlice } from "./SearchModel";
+import { createMacroSlice, NotemacMacroSlice } from "./MacroModel";
+import { createUISlice, NotemacUISlice } from "./UIModel";
+import { createFileTreeSlice, NotemacFileTreeSlice } from "./FileTreeModel";
+import { createSnippetSlice, NotemacSnippetSlice } from "./SnippetModel";
+import { createGitSlice, NotemacGitSlice } from "./GitModel";
+import { createAISlice, NotemacAISlice } from "./AIModel";
+import { createPluginSlice, NotemacPluginSlice } from "./PluginModel";
+
+export type NotemacState = NotemacTabSlice & NotemacSearchSlice & NotemacMacroSlice & NotemacUISlice & NotemacFileTreeSlice & NotemacSnippetSlice & NotemacGitSlice & NotemacAISlice & NotemacPluginSlice;
+
+export const useNotemacStore = create<NotemacState>()((...a) => ({
+    ...createTabSlice(...a),
+    ...createSearchSlice(...a),
+    ...createMacroSlice(...a),
+    ...(createUISlice as StateCreator<NotemacState, [], [], NotemacUISlice>)(...a),
+    ...createFileTreeSlice(...a),
+    ...createSnippetSlice(...a),
+    ...createGitSlice(...a),
+    ...createAISlice(...a),
+    ...createPluginSlice(...a),
+}));
+
+// Expose store for E2E test inspection
+if (typeof window !== 'undefined') {
+    (window as unknown as Record<string, unknown>).__ZUSTAND_STORE__ = useNotemacStore;
+}

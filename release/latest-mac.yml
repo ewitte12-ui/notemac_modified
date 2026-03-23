@@ -1,0 +1,11 @@
+version: 3.4.0
+files:
+  - url: notemac-plus-plus-3.4.0-arm64-mac.zip
+    sha512: R8yjkyUgsArJKh2CxEP0mUrPgiSigDxgUyu9/0V7boTW4Y8OFV513r5lJ5I5z9LkTuJOPY8uTCq7DV/uapYX+g==
+    size: 143403681
+  - url: notemac-plus-plus-3.4.0.dmg
+    sha512: PaPRUOr0KqWDYKMxYzxo253bXJmGo3SmzmQYnPLYtCrHxAXGl0VYMGXdKc/BICnuRtJv4YeT0ZAwAyDeiQUNCw==
+    size: 149455265
+path: notemac-plus-plus-3.4.0-arm64-mac.zip
+sha512: R8yjkyUgsArJKh2CxEP0mUrPgiSigDxgUyu9/0V7boTW4Y8OFV513r5lJ5I5z9LkTuJOPY8uTCq7DV/uapYX+g==
+releaseDate: '2026-03-12T14:25:06.886Z'
